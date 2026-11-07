@@ -1,9 +1,10 @@
--- Modified DUMPER v2.2.4 – Mobile Edition
--- Changes:
---   1. All scripts are now written to a single Lua file (AllScripts.lua) instead of per‑service folders.
---   2. Remote list is also written to a single text file (Remotes.txt).
---   3. Folder creation for per‑service script storage is retained for backward compatibility but no longer used for script output.
---   4. Minor clean‑up of comments.
+--[[
+    DUMPER v2.2.4 - Mobile Edition & Full Workspace Saver (Modified)
+    - รวมสคริปต์ทั้งหมดลงไฟล์เดียว (AllScripts.lua)
+    - รวม Remote ทั้งหมดลงไฟล์เดียว (AllRemotes.txt)
+    - ไม่แยก Folder ต่อ Service อีกต่อไป
+    - รองรับหน้าจอมือถือ (Auto UIScale, Touch Scroll, Screen Clamp, Floating Button)
+]]
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -17,7 +18,7 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ==========================================
--- 1. File System & Clipboard helpers
+-- 1. ตรวจสอบฟังก์ชัน File System & Clipboard
 -- ==========================================
 local hasFileSystem = (typeof(writefile) == "function" and typeof(makefolder) == "function")
 local hasIsFolder = (typeof(isfolder) == "function")
@@ -62,25 +63,49 @@ local function sanitizeFileName(name)
 end
 
 -- ==========================================
--- 2. Configuration
+-- 2. การตั้งค่าเริ่มต้น (Configuration State)
 -- ==========================================
 local Config = {
-    Scripts = { LocalScript = true, ModuleScript = true, ClientRunScript = true },
-    Remotes = { RemoteEvent = true, RemoteFunction = true, Bindables = false },
-    Services = { ReplicatedFirst = true, StarterGui = true, StarterPack = true, StarterPlayer = true, Lighting = true },
-    Reports = { ScriptIndex = true, HierarchyTree = true, GameInfo = true },
-    Performance = { ChunkYield = true },
+    Scripts = {
+        LocalScript = true,
+        ModuleScript = true,
+        ClientRunScript = true,
+    },
+    Remotes = {
+        RemoteEvent = true,
+        RemoteFunction = true,
+        Bindables = false,
+    },
+    Services = {
+        ReplicatedFirst = true,
+        StarterGui = true,
+        StarterPack = true,
+        StarterPlayer = true,
+        Lighting = true,
+    },
+    Reports = {
+        ScriptIndex = true,
+        HierarchyTree = true,
+        GameInfo = true,
+    },
+    Performance = {
+        ChunkYield = true,
+    },
     Advanced = {
         OutputFormat = ".lua",
         DecompileTimeout = false,
         TimeoutDuration = 60,
-        MaxFileSizeIndex = 1, -- 1 = OFF, 2 = 50KB, 3 = 100KB, 4 = 500KB
+        MaxFileSizeIndex = 1,
         IncludeDisabledScripts = false,
         DumpProperties = false,
         DetectObfuscation = true,
         AutoCopySummary = false,
     },
-    ReportsAdvanced = { JSONExport = true, DependencyGraph = true, SizeBreakdown = true },
+    ReportsAdvanced = {
+        JSONExport = true,
+        DependencyGraph = true,
+        SizeBreakdown = true,
+    }
 }
 
 local Formats = {".lua", ".txt", ".json"}
@@ -89,7 +114,7 @@ local FileSizes = {"OFF", "50KB", "100KB", "500KB"}
 local FileSizeBytes = {math.huge, 50 * 1024, 100 * 1024, 500 * 1024}
 
 -- ==========================================
--- 3. UI creation (unchanged)
+-- 3. สร้าง UI หลัก พร้อมระบบปรับขนาดตามจอมือถือ
 -- ==========================================
 local function getParentGui()
     local ok, gui = pcall(function()
@@ -110,7 +135,7 @@ ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = parentGui
 
--- Floating button (unchanged)
+-- ปุ่มลอยสำหรับมือถือ (Floating Toggle Button)
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Name = "FloatToggle"
 FloatBtn.Size = UDim2.new(0, 86, 0, 32)
@@ -132,7 +157,7 @@ FloatStroke.Color = Color3.fromRGB(114, 105, 227)
 FloatStroke.Thickness = 1.5
 FloatStroke.Parent = FloatBtn
 
--- Main window (unchanged)
+-- หน้าต่างหลัก
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -172,10 +197,162 @@ MainStroke.Color = Color3.fromRGB(48, 51, 72)
 MainStroke.Thickness = 1
 MainStroke.Parent = MainFrame
 
--- Top bar, etc. (omitted for brevity – unchanged UI code continues below)…
+-- แถบหัวหน้าต่าง (Top Bar)
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(1, 0, 0, 38)
+TopBar.BackgroundColor3 = Color3.fromRGB(20, 21, 30)
+TopBar.BorderSizePixel = 0
+TopBar.Active = true
+TopBar.Parent = MainFrame
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(0, 75, 1, 0)
+TitleLabel.Position = UDim2.new(0, 14, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "DUMPER"
+TitleLabel.TextColor3 = Color3.fromRGB(240, 240, 250)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 14
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TopBar
+
+local VersionLabel = Instance.new("TextLabel")
+VersionLabel.Size = UDim2.new(0, 120, 1, 0)
+VersionLabel.Position = UDim2.new(0, 82, 0, 0)
+VersionLabel.BackgroundTransparency = 1
+VersionLabel.Text = "Potassium v2.2.4"
+VersionLabel.TextColor3 = Color3.fromRGB(105, 110, 135)
+VersionLabel.Font = Enum.Font.Gotham
+VersionLabel.TextSize = 11
+VersionLabel.TextXAlignment = Enum.TextXAlignment.Left
+VersionLabel.Parent = TopBar
+
+-- ปุ่มย่อ (-) และ ปุ่มปิด (X)
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Size = UDim2.new(0, 34, 0, 34)
+MinimizeBtn.Position = UDim2.new(1, -70, 0, 2)
+MinimizeBtn.BackgroundTransparency = 1
+MinimizeBtn.Text = "—"
+MinimizeBtn.TextColor3 = Color3.fromRGB(180, 185, 205)
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.TextSize = 14
+MinimizeBtn.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 34, 0, 34)
+CloseBtn.Position = UDim2.new(1, -36, 0, 2)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(180, 185, 205)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 15
+CloseBtn.Parent = TopBar
+
+-- แถบแสดงชื่อแมพและ Place ID
+local GameInfoBar = Instance.new("Frame")
+GameInfoBar.Size = UDim2.new(1, 0, 0, 28)
+GameInfoBar.Position = UDim2.new(0, 0, 0, 38)
+GameInfoBar.BackgroundColor3 = Color3.fromRGB(28, 30, 42)
+GameInfoBar.BorderSizePixel = 0
+GameInfoBar.Parent = MainFrame
+
+local PlaceNameText = game.Name
+local PlaceNameLabel = Instance.new("TextLabel")
+PlaceNameLabel.Size = UDim2.new(0.58, -14, 1, 0)
+PlaceNameLabel.Position = UDim2.new(0, 14, 0, 0)
+PlaceNameLabel.BackgroundTransparency = 1
+PlaceNameLabel.Text = PlaceNameText
+PlaceNameLabel.TextColor3 = Color3.fromRGB(200, 205, 225)
+PlaceNameLabel.Font = Enum.Font.GothamMedium
+PlaceNameLabel.TextSize = 11
+PlaceNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlaceNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+PlaceNameLabel.Parent = GameInfoBar
+
+local PlaceIdLabel = Instance.new("TextLabel")
+PlaceIdLabel.Size = UDim2.new(0.42, -14, 1, 0)
+PlaceIdLabel.Position = UDim2.new(0.58, 0, 0, 0)
+PlaceIdLabel.BackgroundTransparency = 1
+PlaceIdLabel.Text = "#" .. tostring(game.PlaceId)
+PlaceIdLabel.TextColor3 = Color3.fromRGB(130, 135, 160)
+PlaceIdLabel.Font = Enum.Font.Gotham
+PlaceIdLabel.TextSize = 10
+PlaceIdLabel.TextXAlignment = Enum.TextXAlignment.Right
+PlaceIdLabel.Parent = GameInfoBar
+
+task.spawn(function()
+    local ok, info = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId)
+    end)
+    if ok and info and info.Name then
+        PlaceNameText = info.Name
+        PlaceNameLabel.Text = info.Name
+    end
+end)
+
+-- พื้นที่รายการตั้งค่า (ScrollingFrame)
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Size = UDim2.new(1, 0, 1, -114)
+ScrollFrame.Position = UDim2.new(0, 0, 0, 66)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = UserInputService.TouchEnabled and 6 or 3
+ScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(114, 105, 227)
+ScrollFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollFrame.Parent = MainFrame
+
+local ListLayout = Instance.new("UIListLayout")
+ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ListLayout.Padding = UDim.new(0, 4)
+ListLayout.Parent = ScrollFrame
+
+local ScrollPadding = Instance.new("UIPadding")
+ScrollPadding.PaddingTop = UDim.new(0, 6)
+ScrollPadding.PaddingBottom = UDim.new(0, 12)
+ScrollPadding.PaddingLeft = UDim.new(0, 14)
+ScrollPadding.PaddingRight = UDim.new(0, 14)
+ScrollPadding.Parent = ScrollFrame
+
+-- แถบด้านล่าง (Bottom Bar)
+local BottomBar = Instance.new("Frame")
+BottomBar.Size = UDim2.new(1, 0, 0, 48)
+BottomBar.Position = UDim2.new(0, 0, 1, -48)
+BottomBar.BackgroundColor3 = Color3.fromRGB(20, 21, 30)
+BottomBar.BorderSizePixel = 0
+BottomBar.Parent = MainFrame
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(0.58, -14, 1, 0)
+StatusLabel.Position = UDim2.new(0, 14, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Ready"
+StatusLabel.TextColor3 = Color3.fromRGB(110, 115, 140)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 10
+StatusLabel.TextWrapped = true
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = BottomBar
+
+local StartDumpBtn = Instance.new("TextButton")
+StartDumpBtn.Size = UDim2.new(0, 102, 0, 32)
+StartDumpBtn.Position = UDim2.new(1, -114, 0.5, -16)
+StartDumpBtn.BackgroundColor3 = Color3.fromRGB(114, 105, 227)
+StartDumpBtn.Text = "START DUMP"
+StartDumpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StartDumpBtn.Font = Enum.Font.GothamBold
+StartDumpBtn.TextSize = 11
+StartDumpBtn.AutoButtonColor = true
+StartDumpBtn.Parent = BottomBar
+
+local StartBtnCorner = Instance.new("UICorner")
+StartBtnCorner.CornerRadius = UDim.new(0, 6)
+StartBtnCorner.Parent = StartDumpBtn
 
 -- ==========================================
--- 4. UI helpers (category headers, toggles, etc.) – unchanged
+-- 4. ฟังก์ชันสร้างคอมโพเนนต์ (Touch-Optimized)
 -- ==========================================
 local layoutOrder = 0
 local function nextOrder()
@@ -252,8 +429,12 @@ local function createToggle(labelText, defaultState, callback)
     local state = defaultState
     RowBtn.Activated:Connect(function()
         state = not state
-        TweenService:Create(ToggleBg, TweenInfo.new(0.15), {BackgroundColor3 = state and Color3.fromRGB(114, 105, 227) or Color3.fromRGB(50, 53, 72)}):Play()
-        TweenService:Create(Knob, TweenInfo.new(0.15), {Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)}):Play()
+        TweenService:Create(ToggleBg, TweenInfo.new(0.15), {
+            BackgroundColor3 = state and Color3.fromRGB(114, 105, 227) or Color3.fromRGB(50, 53, 72)
+        }):Play()
+        TweenService:Create(Knob, TweenInfo.new(0.15), {
+            Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+        }):Play()
         callback(state)
     end)
 end
@@ -359,7 +540,7 @@ local function createStepper(labelText, initialValueText, onStep)
 end
 
 -- ==========================================
--- 5. Populate UI (unchanged)
+-- 5. สร้างรายการตัวเลือกทั้งหมด
 -- ==========================================
 createCategoryHeader("SCRIPTS")
 createToggle("LocalScript", Config.Scripts.LocalScript, function(v) Config.Scripts.LocalScript = v end)
@@ -412,7 +593,7 @@ createToggle("Dependency Graph", Config.ReportsAdvanced.DependencyGraph, functio
 createToggle("Size Breakdown", Config.ReportsAdvanced.SizeBreakdown, function(v) Config.ReportsAdvanced.SizeBreakdown = v end)
 
 -- ==========================================
--- 6. Overlay for summary (unchanged)
+-- 6. หน้าต่างดูผลลัพธ์แบบ Overlay
 -- ==========================================
 local OutputOverlay = Instance.new("Frame")
 OutputOverlay.Size = UDim2.new(1, 0, 1, -38)
@@ -515,7 +696,7 @@ CopySummaryBtn.Activated:Connect(function()
 end)
 
 -- ==========================================
--- 7. Dump engine – modified to produce single files
+-- 7. ระบบดึงข้อมูลและบันทึก – รวมเป็นไฟล์เดียว
 -- ==========================================
 local function isObfuscated(sourceCode)
     if not sourceCode or #sourceCode == 0 then return false end
@@ -540,6 +721,7 @@ local function getScriptContent(scriptInstance, timeoutSec)
     if okSrc and typeof(src) == "string" and #src > 0 then
         return src
     end
+
     if hasDecompile then
         local result = nil
         local finished = false
@@ -550,6 +732,7 @@ local function getScriptContent(scriptInstance, timeoutSec)
             end
             finished = true
         end)
+
         local waited = 0
         local maxWait = Config.Advanced.DecompileTimeout and timeoutSec or 10
         while not finished and waited < maxWait do
@@ -557,6 +740,7 @@ local function getScriptContent(scriptInstance, timeoutSec)
         end
         if result then return result end
     end
+
     return "-- [Source unavailable or protected in current environment]\n-- Path: " .. scriptInstance:GetFullName()
 end
 
@@ -567,36 +751,31 @@ StartDumpBtn.Activated:Connect(function()
     isDumping = true
     StartDumpBtn.BackgroundColor3 = Color3.fromRGB(75, 70, 150)
     StartDumpBtn.Text = "DUMPING..."
-    StatusLabel.Text = "Preparing workspace..."
+    StatusLabel.Text = "Preparing..."
 
     task.spawn(function()
         local startTime = os.clock()
         local cleanPlaceName = sanitizeFileName(PlaceNameText)
         local rootFolderName = string.format("Dump_%s_%d", cleanPlaceName, game.PlaceId)
 
-        -- Filesystem folder (still created for compatibility)
+        -- เตรียมโฟลเดอร์ใน File System
         local fsReady = ensureFolder(rootFolderName)
         if fsReady then
             ensureFolder(rootFolderName .. "/Reports")
         end
 
-        -- In‑game folder (unchanged)
+        -- เตรียมโฟลเดอร์ใน game.Workspace (In-Game Instance)
         local oldWsFolder = Workspace:FindFirstChild(rootFolderName)
         if oldWsFolder then oldWsFolder:Destroy() end
+
         local wsRootFolder = Instance.new("Folder")
         wsRootFolder.Name = rootFolderName
         wsRootFolder.Parent = Workspace
-        local wsScriptsFolder = Instance.new("Folder")
-        wsScriptsFolder.Name = "Scripts"
-        wsScriptsFolder.Parent = wsRootFolder
-        local wsRemotesFolder = Instance.new("Folder")
-        wsRemotesFolder.Name = "Remotes"
-        wsRemotesFolder.Parent = wsRootFolder
+
         local wsReportsFolder = Instance.new("Folder")
         wsReportsFolder.Name = "Reports"
         wsReportsFolder.Parent = wsRootFolder
 
-        -- Helper to write reports both to FS and in‑game (unchanged)
         local function saveReportBoth(fileName, content)
             if fsReady then
                 safeWriteFile(rootFolderName .. "/Reports/" .. fileName, content)
@@ -611,7 +790,9 @@ StartDumpBtn.Activated:Connect(function()
         for serviceName, enabled in pairs(Config.Services) do
             if enabled then
                 local ok, srv = pcall(function() return game:GetService(serviceName) end)
-                if ok and srv then table.insert(targetServices, srv) end
+                if ok and srv then
+                    table.insert(targetServices, srv)
+                end
             end
         end
 
@@ -619,14 +800,14 @@ StartDumpBtn.Activated:Connect(function()
         local collectedRemotes = {}
         local treeLines = {}
         local processedCount = 0
-        local allScriptContent = "" -- accumulator for single script file
-        local remoteListContent = "" -- accumulator for remote list file
+
+        -- ตัวสะสมเนื้อหารวม
+        local allScriptParts = {}
+        local allRemoteParts = {}
 
         for _, srv in ipairs(targetServices) do
             table.insert(treeLines, "[" .. srv.Name .. "]")
-            local srvFolderInWs = Instance.new("Folder")
-            srvFolderInWs.Name = srv.Name
-            srvFolderInWs.Parent = wsScriptsFolder
+
             local descendants = srv:GetDescendants()
             for _, inst in ipairs(descendants) do
                 processedCount += 1
@@ -640,7 +821,7 @@ StartDumpBtn.Activated:Connect(function()
                     break
                 end
 
-                -- --- SCRIPT HANDLING -------------------------------------------------
+                -- ===== SCRIPTS =====
                 local isTargetScript = false
                 if inst:IsA("LocalScript") and Config.Scripts.LocalScript then
                     isTargetScript = true
@@ -648,33 +829,39 @@ StartDumpBtn.Activated:Connect(function()
                     isTargetScript = true
                 elseif inst:IsA("Script") and Config.Scripts.ClientRunScript then
                     local okRun, runCtx = pcall(function() return inst.RunContext end)
-                    if okRun and runCtx == Enum.RunContext.Client then isTargetScript = true end
+                    if okRun and runCtx == Enum.RunContext.Client then
+                        isTargetScript = true
+                    end
                 end
 
                 if isTargetScript then
                     local isDisabled = false
                     pcall(function() isDisabled = inst.Disabled end)
+
                     if not isDisabled or Config.Advanced.IncludeDisabledScripts then
                         local src = getScriptContent(inst, Config.Advanced.TimeoutDuration)
                         local sourceLen = #src
                         local maxAllowed = FileSizeBytes[Config.Advanced.MaxFileSizeIndex]
+
                         if sourceLen <= maxAllowed then
                             local obf = Config.Advanced.DetectObfuscation and isObfuscated(src)
                             local propStr = ""
                             if Config.Advanced.DumpProperties then
                                 propStr = string.format(" [Class=%s, Disabled=%s]", inst.ClassName, tostring(isDisabled))
                             end
+
+                            local separator = string.rep("=", 60)
                             local headerComment = string.format(
-                                "-- Path: %s\n-- Class: %s | Size: %d bytes%s\n\n",
+                                "-- %s\n-- Path: %s\n-- Class: %s | Size: %d bytes%s\n-- %s\n\n",
+                                separator,
                                 inst:GetFullName(),
                                 inst.ClassName,
                                 sourceLen,
-                                obf and " | [OBFUSCATED]" or ""
+                                obf and " | [OBFUSCATED]" or "",
+                                separator
                             )
-                            local fileContent = headerComment .. src
 
-                            -- Append to the single Lua dump file (only for .lua output)
-                            allScriptContent = allScriptContent .. "\n" .. fileContent
+                            table.insert(allScriptParts, headerComment .. src .. "\n")
 
                             local entry = {
                                 Path = inst:GetFullName(),
@@ -682,7 +869,7 @@ StartDumpBtn.Activated:Connect(function()
                                 Size = sourceLen,
                                 Obfuscated = obf,
                                 Properties = propStr,
-                                Dependencies = extractRequires(src),
+                                Dependencies = extractRequires(src)
                             }
                             table.insert(collectedScripts, entry)
                             table.insert(treeLines, "  ├─ 📜 " .. inst:GetFullName() .. (obf and " [⚠️ OBF]" or ""))
@@ -690,28 +877,69 @@ StartDumpBtn.Activated:Connect(function()
                     end
                 end
 
-                -- --- REMOTE HANDLING -------------------------------------------------
-                local isTargetRemote = (inst:IsA("RemoteEvent") and Config.Remotes.RemoteEvent) or
-                    (inst:IsA("RemoteFunction") and Config.Remotes.RemoteFunction) or
-                    ((inst:IsA("BindableEvent") or inst:IsA("BindableFunction")) and Config.Remotes.Bindables)
+                -- ===== REMOTES =====
+                local isTargetRemote = (inst:IsA("RemoteEvent") and Config.Remotes.RemoteEvent)
+                    or (inst:IsA("RemoteFunction") and Config.Remotes.RemoteFunction)
+                    or ((inst:IsA("BindableEvent") or inst:IsA("BindableFunction")) and Config.Remotes.Bindables)
+
                 if isTargetRemote then
-                    local rmEntry = { Path = inst:GetFullName(), ClassName = inst.ClassName }
+                    local rmEntry = {
+                        Path = inst:GetFullName(),
+                        ClassName = inst.ClassName
+                    }
                     table.insert(collectedRemotes, rmEntry)
                     table.insert(treeLines, "  ├─ 📡 " .. inst:GetFullName() .. " (" .. inst.ClassName .. ")")
-                    -- Add to remote list string (plain text)
-                    remoteListContent = remoteListContent .. string.format("%s (%s)\n", inst:GetFullName(), inst.ClassName)
-                    -- In‑game representation (unchanged)
-                    local rVal = Instance.new("ObjectValue")
-                    rVal.Name = inst.Name .. " [" .. inst.ClassName .. "]"
-                    rVal.Value = inst
-                    rVal.Parent = wsRemotesFolder
+                    table.insert(allRemoteParts, string.format("[%s] %s", inst.ClassName, inst:GetFullName()))
                 end
             end
         end
 
-        -- ------------------- REPORTS ----------------------------------------
+        -- ===== เขียนไฟล์รวม AllScripts =====
+        if #allScriptParts > 0 then
+            local allScriptsContent = string.format(
+                "-- ALL SCRIPTS DUMP\n-- Game: %s (#%d)\n-- Total: %d scripts\n-- Date: %s\n\n%s",
+                PlaceNameText, game.PlaceId, #collectedScripts,
+                os.date("%Y-%m-%d %H:%M:%S"),
+                table.concat(allScriptParts, "\n")
+            )
+
+            if fsReady then
+                safeWriteFile(rootFolderName .. "/AllScripts" .. Config.Advanced.OutputFormat, allScriptsContent)
+            end
+
+            -- บันทึกลง game.Workspace ด้วย
+            local sVal = Instance.new("StringValue")
+            sVal.Name = "AllScripts"
+            sVal.Value = string.sub(allScriptsContent, 1, 190000)
+            sVal.Parent = wsRootFolder
+        end
+
+        -- ===== เขียนไฟล์รวม AllRemotes =====
+        if #allRemoteParts > 0 then
+            local allRemotesContent = string.format(
+                "-- ALL REMOTES DUMP\n-- Game: %s (#%d)\n-- Total: %d remotes\n-- Date: %s\n\n%s",
+                PlaceNameText, game.PlaceId, #collectedRemotes,
+                os.date("%Y-%m-%d %H:%M:%S"),
+                table.concat(allRemoteParts, "\n")
+            )
+
+            if fsReady then
+                safeWriteFile(rootFolderName .. "/AllRemotes.txt", allRemotesContent)
+            end
+
+            -- บันทึกลง game.Workspace ด้วย
+            local rVal = Instance.new("StringValue")
+            rVal.Name = "AllRemotes"
+            rVal.Value = string.sub(allRemotesContent, 1, 190000)
+            rVal.Parent = wsRootFolder
+        end
+
+        -- ===== สร้างรายงาน =====
         local summaryLines = {}
-        local function addSummary(line) table.insert(summaryLines, line) end
+        local function addSummary(line)
+            table.insert(summaryLines, line)
+        end
+
         addSummary("========================================")
         addSummary("WORKSPACE DUMP COMPLETED")
         addSummary("========================================")
@@ -751,20 +979,11 @@ StartDumpBtn.Activated:Connect(function()
             for i, rm in ipairs(collectedRemotes) do
                 table.insert(rmLines, string.format("[%d] [%s] %s", i, rm.ClassName, rm.Path))
             end
-            local rmText = table.concat(rmLines, "\n")
-            saveReportBoth("RemotesIndex.txt", rmText)
-            if fsReady then
-                safeWriteFile(rootFolderName .. "/Remotes/RemotesList.txt", rmText)
-            end
-            -- Also write the simple remote list (single file)
-            if fsReady then
-                safeWriteFile(rootFolderName .. "/AllRemotes.txt", remoteListContent)
-            end
+            saveReportBoth("RemotesIndex.txt", table.concat(rmLines, "\n"))
         end
 
         if Config.Reports.HierarchyTree then
-            local treeText = table.concat(treeLines, "\n")
-            saveReportBoth("HierarchyTree.txt", treeText)
+            saveReportBoth("HierarchyTree.txt", table.concat(treeLines, "\n"))
         end
 
         if Config.ReportsAdvanced.DependencyGraph then
@@ -796,7 +1015,7 @@ StartDumpBtn.Activated:Connect(function()
                     PlaceId = game.PlaceId,
                     PlaceName = PlaceNameText,
                     Scripts = collectedScripts,
-                    Remotes = collectedRemotes,
+                    Remotes = collectedRemotes
                 })
             end)
             if okJson then
@@ -804,18 +1023,14 @@ StartDumpBtn.Activated:Connect(function()
             end
         end
 
-        -- Write the combined script dump (single Lua file)
-        if fsReady then
-            local scriptFilePath = rootFolderName .. "/AllScripts" .. Config.Advanced.OutputFormat
-            safeWriteFile(scriptFilePath, allScriptContent)
-        end
-
         local finalSummary = table.concat(summaryLines, "\n")
         OutputBox.Text = finalSummary
         OutputOverlay.Visible = true
+
         if Config.Advanced.AutoCopySummary then
             copyToClipboard(finalSummary)
         end
+
         StatusLabel.Text = "Saved to " .. rootFolderName
         StartDumpBtn.BackgroundColor3 = Color3.fromRGB(114, 105, 227)
         StartDumpBtn.Text = "START DUMP"
@@ -824,7 +1039,7 @@ StartDumpBtn.Activated:Connect(function()
 end)
 
 -- ==========================================
--- 8. Draggable UI (unchanged)
+-- 8. ระบบลากหน้าต่าง (รองรับทั้งเมาส์และนิ้วสัมผัส + ล็อกไม่ให้ตกขอบจอ)
 -- ==========================================
 local function makeDraggable(dragHandle, targetFrame)
     local dragging = false
@@ -877,7 +1092,7 @@ end
 makeDraggable(TopBar, MainFrame)
 makeDraggable(FloatBtn, FloatBtn)
 
--- Minimize / Close handling (unchanged)
+-- ระบบปุ่มย่อ/ปิด และปุ่มลอยบนมือถือ
 local isMinimized = false
 MinimizeBtn.Activated:Connect(function()
     isMinimized = not isMinimized
@@ -901,5 +1116,3 @@ CloseBtn.Activated:Connect(function()
         ScreenGui:Destroy()
     end
 end)
-
--- End of modified script
