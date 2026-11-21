@@ -1,10 +1,3 @@
---[[
-    DUMPER v2.6.0 - Single script.lua (ImGui UI + Extras + NEXUS folder + Split files)
-    - ไฟล์ผลลัพธ์: workspace/NEXUS/<Map>/<Map>.lua  (แบ่งได้ 1-10 ไฟล์: <Map>_part01of05.lua)
-    - ซอร์สสคริปต์ทุกตัวถูกเก็บในคอมเมนต์ยาว --[==[ ... ]==] ไฟล์จึงไม่พังและแบ่งไฟล์ปลอดภัย
-    - ถ้าสคริปต์พังตอนเริ่ม จะมีกล่องแดงแสดง error (ไม่เงียบ)
-]]
-
 local function showFatal(msg)
     warn("[DUMPER] " .. tostring(msg))
     pcall(function()
@@ -44,12 +37,17 @@ local Camera = WS.CurrentCamera
 local genv = (typeof(getgenv) == "function" and getgenv()) or {}
 
 -- ==========================================
--- 1. ตัวช่วยพื้นฐาน
+-- 1. Helpers
 -- ==========================================
 local hasWrite = (typeof(writefile) == "function")
 local hasDecompile = (typeof(decompile) == "function")
+local hasBytecode = (typeof(getscriptbytecode) == "function")
+local hasNilInstances = (typeof(getnilinstances) == "function")
 
 local function copyToClipboard(text)
+    if #text > 450 * 1024 then
+        text = string.sub(text, 1, 450 * 1024) .. "\n-- [TRUNCATED FOR CLIPBOARD SAFETY]"
+    end
     if typeof(setclipboard) == "function" then
         return (pcall(setclipboard, text))
     elseif typeof(toclipboard) == "function" then
@@ -60,6 +58,7 @@ end
 
 local function safeWrite(path, content)
     if not hasWrite then return false end
+    content = string.gsub(content, "%z", "\\000")
     return (pcall(writefile, path, content))
 end
 
@@ -67,6 +66,7 @@ local IgnoredNames = {
     PlayerModule = true, ControlModule = true, CameraModule = true, ChatScript = true,
     BubbleChat = true, Animate = true, RbxCharacterSounds = true, AtomicBinding = true,
     DefaultChatSystemChatEvents = true, RobloxGui = true, Freecam = true, PlayerScriptsLoader = true,
+    RbxCharacterSoundsAtomic = true, CorePackages = true,
 }
 
 local function shouldIgnore(inst)
@@ -78,24 +78,46 @@ local function shouldIgnore(inst)
     return false
 end
 
--- พาธแบบ Lua (พาธของผู้เล่นเราแสดงเป็น LocalPlayer ไม่หลุดชื่อบัญชี)
+local function isCoreDescendant(inst)
+    if inst == CoreGui or inst:IsDescendantOf(CoreGui) then return true end
+    local ok, cp = pcall(game.GetService, game, "CorePackages")
+    if ok and cp and (inst == cp or inst:IsDescendantOf(cp)) then return true end
+    return false
+end
+
 local function formatLuaPath(inst)
+    if inst == game then return "game" end
     local segs, cur = {}, inst
     while cur and cur ~= game do
         table.insert(segs, 1, cur)
         cur = cur.Parent
     end
-    if #segs == 0 then return "game" end
-    local svc = segs[1].ClassName
-    local result = string.format('game:GetService("%s")', svc)
+    if #segs == 0 then return "nil" end
+
+    local isRooted = (cur == game)
+    local result
     local start = 2
-    if svc == "Players" and segs[2] == LP then
-        result = result .. ".LocalPlayer"
-        start = 3
-    elseif svc == "Workspace" and segs[2] ~= nil and segs[2] == LP.Character then
-        result = 'game:GetService("Players").LocalPlayer.Character'
-        start = 3
+
+    if isRooted then
+        local svc = segs[1].ClassName
+        result = string.format('game:GetService("%s")', svc)
+        if svc == "Players" and segs[2] == LP then
+            result = result .. ".LocalPlayer"
+            start = 3
+        elseif svc == "Workspace" and segs[2] ~= nil and segs[2] == LP.Character then
+            result = 'game:GetService("Players").LocalPlayer.Character'
+            start = 3
+        end
+    else
+        local rootName = segs[1].Name
+        if string.match(rootName, "^[_%a][_%w]*$") then
+            result = "nil." .. rootName
+        else
+            local esc = string.gsub(rootName, '[\\"]', "\\%0")
+            result = 'nil["' .. esc .. '"]'
+        end
     end
+
     for i = start, #segs do
         local name = segs[i].Name
         if string.match(name, "^[_%a][_%w]*$") then
@@ -125,14 +147,14 @@ local Config = {
         SkipDefaultScripts = true, OutputFormat = ".lua", DecompileTimeout = true,
         TimeoutDuration = 10, MaxFileSizeIndex = 3, IncludeDisabledScripts = false,
         DumpProperties = false, DetectObfuscation = true, AutoCopySummary = false,
-        SplitParts = 1, -- 1 = ไฟล์เดียว, 2-10 = แบ่งหลายไฟล์
+        SplitParts = 1,
     },
     ReportsAdvanced = { DependencyGraph = true, SizeBreakdown = true },
     Extras = {
         ServiceAttributes = true, UIHierarchy = true, UIConnections = true, UIHideDecor = true,
         RSValues = true, RSForceRequire = false, RemoteLog = false, IncomingLog = false,
         GameInfo = true, PlayerData = true, WorldOverview = true, Interactables = true,
-        NPCCensus = true, LoadedModules = true, LiveScripts = true,
+        NPCCensus = true, LoadedModules = true, LiveScripts = true, NilInstances = true,
     },
 }
 
@@ -142,7 +164,7 @@ local FileSizes = { "OFF", "50KB", "100KB", "500KB" }
 local FileSizeBytes = { math.huge, 50 * 1024, 100 * 1024, 500 * 1024 }
 
 -- ==========================================
--- 3. UI (Dear ImGui Classic Dark)
+-- 3. UI (Dear ImGui Compact)
 -- ==========================================
 local IG = {
     WindowBg = Color3.fromRGB(15, 15, 15), ChildBg = Color3.fromRGB(20, 20, 20),
@@ -163,14 +185,16 @@ local function mk(class, props, parent)
 end
 
 local function stroke(inst, color)
-    return mk("UIStroke", { Color = color or IG.Border, Thickness = 1,
-        ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, inst)
+    return mk("UIStroke", {
+        Color = color or IG.Border, Thickness = 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    }, inst)
 end
 
 local function label(parent, text, size, pos, color, align, ts)
     return mk("TextLabel", {
         Size = size, Position = pos or UDim2.new(), BackgroundTransparency = 1, Text = text,
-        TextColor3 = color or IG.Text, Font = IG.Font, TextSize = ts or 12,
+        TextColor3 = color or IG.Text, Font = IG.Font, TextSize = ts or 11,
         TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
     }, parent)
 end
@@ -185,21 +209,23 @@ pcall(function()
     if old then old:Destroy() end
 end)
 
-local ScreenGui = mk("ScreenGui", { Name = "DumperMobileUI", ResetOnSpawn = false, IgnoreGuiInset = true,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999 }, nil)
+local ScreenGui = mk("ScreenGui", {
+    Name = "DumperMobileUI", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999
+}, nil)
 local okParent = pcall(function() ScreenGui.Parent = parentGui end)
 if not okParent then ScreenGui.Parent = LP:WaitForChild("PlayerGui") end
 
 local FloatBtn = mk("TextButton", {
-    Name = "FloatToggle", Size = UDim2.fromOffset(122, 26), Position = UDim2.new(0, 14, 0.5, -13),
+    Name = "FloatToggle", Size = UDim2.fromOffset(96, 22), Position = UDim2.new(0, 12, 0.5, -11),
     BackgroundColor3 = IG.Title, BorderSizePixel = 0, AutoButtonColor = false,
-    Text = " [+] ImGui Dumper", TextColor3 = IG.Text, Font = IG.Font, TextSize = 12,
+    Text = " [+] Dumper", TextColor3 = IG.Text, Font = IG.Font, TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 50,
 }, ScreenGui)
 stroke(FloatBtn)
 
 local MainFrame = mk("Frame", {
-    Name = "MainFrame", AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(340, 430),
+    Name = "MainFrame", AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(265, 310),
     Position = UDim2.fromScale(0.5, 0.5), BackgroundColor3 = IG.WindowBg, BackgroundTransparency = 0.03,
     BorderSizePixel = 0, ClipsDescendants = true, Active = true,
 }, ScreenGui)
@@ -210,28 +236,34 @@ local function updateScale()
     Camera = WS.CurrentCamera or Camera
     if not Camera then return end
     local vp = Camera.ViewportSize
-    MainScale.Scale = math.clamp(math.min(1, (vp.X - 20) / 340, (vp.Y - 20) / 430), 0.55, 1)
+    MainScale.Scale = math.clamp(math.min(0.95, (vp.X - 24) / 265, (vp.Y - 24) / 310), 0.5, 0.95)
 end
 updateScale()
 if Camera then Camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
 
-local TopBar = mk("Frame", { Name = "TitleBar", Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = IG.Title,
-    BorderSizePixel = 0, Active = true }, MainFrame)
-label(TopBar, "v", UDim2.new(0, 16, 1, 0), UDim2.new(0, 6, 0, 0))
-label(TopBar, "DUMPER v2.6.0 [ImGui]", UDim2.new(1, -110, 1, 0), UDim2.new(0, 22, 0, 0))
-label(TopBar, "Single-File", UDim2.new(0, 84, 1, 0), UDim2.new(1, -90, 0, 0),
-    Color3.fromRGB(200, 220, 255), Enum.TextXAlignment.Right, 11)
+local TopBar = mk("Frame", {
+    Name = "TitleBar", Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = IG.Title,
+    BorderSizePixel = 0, Active = true
+}, MainFrame)
+label(TopBar, "v", UDim2.new(0, 14, 1, 0), UDim2.new(0, 5, 0, 0), IG.Text, nil, 10)
+label(TopBar, "DUMPER v2.7", UDim2.new(1, -90, 1, 0), UDim2.new(0, 18, 0, 0), IG.Text, nil, 11)
+local ModeBadge = label(TopBar, "Single-File", UDim2.new(0, 72, 1, 0), UDim2.new(1, -76, 0, 0),
+    Color3.fromRGB(200, 220, 255), Enum.TextXAlignment.Right, 10)
 
-local InfoBar = mk("Frame", { Size = UDim2.new(1, 0, 0, 20), Position = UDim2.new(0, 0, 0, 24),
-    BackgroundColor3 = IG.MenuBar, BorderSizePixel = 0 }, MainFrame)
-mk("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
-    BackgroundColor3 = IG.Border, BorderSizePixel = 0 }, InfoBar)
+local InfoBar = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 17), Position = UDim2.new(0, 0, 0, 20),
+    BackgroundColor3 = IG.MenuBar, BorderSizePixel = 0
+}, MainFrame)
+mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = IG.Border, BorderSizePixel = 0
+}, InfoBar)
 
 local PlaceNameText = tostring(game.Name)
 local PlaceInfo = nil
-local PlaceNameLabel = label(InfoBar, "Place: " .. PlaceNameText, UDim2.new(0.62, -8, 1, 0), UDim2.new(0, 6, 0, 0), IG.Text, nil, 11)
-label(InfoBar, "ID: " .. tostring(game.PlaceId), UDim2.new(0.38, -6, 1, 0), UDim2.new(0.62, 0, 0, 0),
-    IG.Dim, Enum.TextXAlignment.Right, 11)
+local PlaceNameLabel = label(InfoBar, "Place: " .. PlaceNameText, UDim2.new(0.6, -6, 1, 0), UDim2.new(0, 5, 0, 0), IG.Text, nil, 10)
+label(InfoBar, "ID: " .. tostring(game.PlaceId), UDim2.new(0.4, -5, 1, 0), UDim2.new(0.6, 0, 0, 0),
+    IG.Dim, Enum.TextXAlignment.Right, 10)
 
 task.spawn(function()
     local ok, info = pcall(function() return Market:GetProductInfo(game.PlaceId) end)
@@ -243,23 +275,27 @@ task.spawn(function()
 end)
 
 local Scroll = mk("ScrollingFrame", {
-    Size = UDim2.new(1, -8, 1, -78), Position = UDim2.new(0, 4, 0, 48), BackgroundTransparency = 1,
-    BorderSizePixel = 0, ScrollBarThickness = 5, ScrollBarImageColor3 = IG.Check,
+    Size = UDim2.new(1, -6, 1, -64), Position = UDim2.new(0, 3, 0, 40), BackgroundTransparency = 1,
+    BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = IG.Check,
     ScrollingDirection = Enum.ScrollingDirection.Y, CanvasSize = UDim2.new(),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
 }, MainFrame)
-mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, Scroll)
-mk("UIPadding", { PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 8),
-    PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 6) }, Scroll)
+mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 1) }, Scroll)
+mk("UIPadding", {
+    PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6),
+    PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 5)
+}, Scroll)
 
-local BottomBar = mk("Frame", { Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 1, -30),
-    BackgroundColor3 = IG.MenuBar, BorderSizePixel = 0 }, MainFrame)
+local BottomBar = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 1, -24),
+    BackgroundColor3 = IG.MenuBar, BorderSizePixel = 0
+}, MainFrame)
 mk("Frame", { Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = IG.Border, BorderSizePixel = 0 }, BottomBar)
-local StatusLabel = label(BottomBar, "Ready", UDim2.new(1, -112, 1, 0), UDim2.new(0, 6, 0, 0), IG.Dim, nil, 11)
+local StatusLabel = label(BottomBar, "Ready", UDim2.new(1, -86, 1, 0), UDim2.new(0, 5, 0, 0), IG.Dim, nil, 10)
 local StartBtn = mk("TextButton", {
-    Size = UDim2.fromOffset(98, 22), Position = UDim2.new(1, -102, 0.5, -11), BackgroundColor3 = IG.Button,
+    Size = UDim2.fromOffset(78, 18), Position = UDim2.new(1, -82, 0.5, -9), BackgroundColor3 = IG.Button,
     BorderSizePixel = 0, AutoButtonColor = false, Text = "Start Dump", TextColor3 = IG.Text,
-    Font = IG.Font, TextSize = 12,
+    Font = IG.Font, TextSize = 11,
 }, BottomBar)
 stroke(StartBtn)
 
@@ -269,10 +305,12 @@ local function nextOrder() order += 1 return order end
 local function reg(x) if section then table.insert(section, x) end end
 
 local function header(title)
-    local btn = mk("TextButton", { Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = IG.Header,
-        BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = nextOrder() }, Scroll)
-    local arrow = label(btn, "v", UDim2.new(0, 16, 1, 0), UDim2.new(0, 5, 0, 0))
-    label(btn, title, UDim2.new(1, -26, 1, 0), UDim2.new(0, 22, 0, 0))
+    local btn = mk("TextButton", {
+        Size = UDim2.new(1, 0, 0, 19), BackgroundColor3 = IG.Header,
+        BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = nextOrder()
+    }, Scroll)
+    local arrow = label(btn, "v", UDim2.new(0, 14, 1, 0), UDim2.new(0, 4, 0, 0), IG.Text, nil, 10)
+    label(btn, title, UDim2.new(1, -20, 1, 0), UDim2.new(0, 18, 0, 0), IG.Text, nil, 11)
     local items, open = {}, true
     section = items
     btn.Activated:Connect(function()
@@ -284,15 +322,21 @@ local function header(title)
 end
 
 local function toggle(text, tbl, key, cb)
-    local row = mk("TextButton", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, Text = "",
-        AutoButtonColor = false, LayoutOrder = nextOrder() }, Scroll)
+    local row = mk("TextButton", {
+        Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, Text = "",
+        AutoButtonColor = false, LayoutOrder = nextOrder()
+    }, Scroll)
     reg(row)
-    local box = mk("Frame", { Size = UDim2.fromOffset(16, 16), Position = UDim2.new(0, 4, 0.5, -8),
-        BackgroundColor3 = IG.FrameBg, BorderSizePixel = 0 }, row)
+    local box = mk("Frame", {
+        Size = UDim2.fromOffset(13, 13), Position = UDim2.new(0, 3, 0.5, -6),
+        BackgroundColor3 = IG.FrameBg, BorderSizePixel = 0
+    }, row)
     stroke(box)
-    local mark = mk("Frame", { Size = UDim2.fromOffset(8, 8), Position = UDim2.fromOffset(4, 4),
-        BackgroundColor3 = IG.Check, BorderSizePixel = 0, Visible = tbl[key] == true }, box)
-    label(row, text, UDim2.new(1, -28, 1, 0), UDim2.new(0, 26, 0, 0))
+    local mark = mk("Frame", {
+        Size = UDim2.fromOffset(7, 7), Position = UDim2.fromOffset(3, 3),
+        BackgroundColor3 = IG.Check, BorderSizePixel = 0, Visible = tbl[key] == true
+    }, box)
+    label(row, text, UDim2.new(1, -22, 1, 0), UDim2.new(0, 21, 0, 0), IG.Text, nil, 11)
     row.Activated:Connect(function()
         local v = not tbl[key]
         tbl[key] = v
@@ -305,14 +349,18 @@ local function toggle(text, tbl, key, cb)
 end
 
 local function cycle(text, initial, onClick)
-    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
-        LayoutOrder = nextOrder() }, Scroll)
+    local row = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+        LayoutOrder = nextOrder()
+    }, Scroll)
     reg(row)
-    local combo = mk("TextButton", { Size = UDim2.fromOffset(70, 18), Position = UDim2.new(0, 4, 0.5, -9),
+    local combo = mk("TextButton", {
+        Size = UDim2.fromOffset(58, 15), Position = UDim2.new(0, 3, 0.5, -7),
         BackgroundColor3 = IG.FrameBg, BorderSizePixel = 0, AutoButtonColor = false,
-        Text = tostring(initial) .. " v", TextColor3 = IG.Text, Font = IG.Font, TextSize = 11 }, row)
+        Text = tostring(initial) .. " v", TextColor3 = IG.Text, Font = IG.Font, TextSize = 10
+    }, row)
     stroke(combo)
-    label(row, text, UDim2.new(1, -82, 1, 0), UDim2.new(0, 80, 0, 0))
+    label(row, text, UDim2.new(1, -66, 1, 0), UDim2.new(0, 65, 0, 0), IG.Text, nil, 11)
     combo.Activated:Connect(function()
         combo.BackgroundColor3 = IG.ButtonActive
         combo.Text = tostring(onClick()) .. " v"
@@ -321,24 +369,29 @@ local function cycle(text, initial, onClick)
 end
 
 local function stepper(text, initial, onStep)
-    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1,
-        LayoutOrder = nextOrder() }, Scroll)
+    local row = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1,
+        LayoutOrder = nextOrder()
+    }, Scroll)
     reg(row)
-    local vf = mk("Frame", { Size = UDim2.fromOffset(52, 18), Position = UDim2.new(0, 4, 0.5, -9),
-        BackgroundColor3 = IG.FrameBg, BorderSizePixel = 0 }, row)
+    local vf = mk("Frame", {
+        Size = UDim2.fromOffset(42, 15), Position = UDim2.new(0, 3, 0.5, -7),
+        BackgroundColor3 = IG.FrameBg, BorderSizePixel = 0
+    }, row)
     stroke(vf)
-    local val = label(vf, tostring(initial), UDim2.new(1, 0, 1, 0), nil, IG.Text, Enum.TextXAlignment.Center, 11)
+    local val = label(vf, tostring(initial), UDim2.new(1, 0, 1, 0), nil, IG.Text, Enum.TextXAlignment.Center, 10)
     for i, sym in ipairs({ "-", "+" }) do
-        local b = mk("TextButton", { Size = UDim2.fromOffset(20, 18), Position = UDim2.new(0, 58 + (i - 1) * 22, 0.5, -9),
+        local b = mk("TextButton", {
+            Size = UDim2.fromOffset(16, 15), Position = UDim2.new(0, 47 + (i - 1) * 18, 0.5, -7),
             BackgroundColor3 = IG.Button, BorderSizePixel = 0, AutoButtonColor = false, Text = sym,
-            TextColor3 = IG.Text, Font = IG.Font, TextSize = 12 }, row)
+            TextColor3 = IG.Text, Font = IG.Font, TextSize = 11
+        }, row)
         stroke(b)
         b.Activated:Connect(function() val.Text = tostring(onStep(i == 1 and -1 or 1)) end)
     end
-    label(row, text, UDim2.new(1, -106, 1, 0), UDim2.new(0, 104, 0, 0))
+    label(row, text, UDim2.new(1, -86, 1, 0), UDim2.new(0, 85, 0, 0), IG.Text, nil, 11)
 end
 
--- ลากหน้าต่าง/ปุ่มลอย (เมาส์ + นิ้ว)
 local function makeDraggable(handle, target, scaled)
     local st = { moved = false }
     local dragging, dStart, sPos = false, nil, nil
@@ -375,21 +428,27 @@ end)
 -- ==========================================
 local XD = {
     LIM = { depth = 4, items = 40, str = 160 }, NODE_CAP = 2000, nodes = 0,
-    RS_CAP = 6000, ATTR_CAP = 1500, MOD_CAP = 150,
+    RS_CAP = 6000, ATTR_CAP = 1500, MOD_CAP = 150, NIL_CAP = 400,
     LIMITS = { prompts = 800, clicks = 400, spawns = 200, mobs = 300, top = 80, classes = 30, player = 600 },
     genv = genv, busy = false, hold = 0, uiCount = 0,
-    UI_SKIP = { Chat = true, TouchGui = true },
-    NOISE = { "BasePart", "Attachment", "JointInstance", "Constraint", "WeldConstraint", "DataModelMesh",
+    UI_SKIP = { Chat = true, TouchGui = true, Freecam = true, BubbleChat = true },
+    NOISE = {
+        "BasePart", "Attachment", "JointInstance", "Constraint", "WeldConstraint", "DataModelMesh",
         "FaceInstance", "SurfaceAppearance", "ParticleEmitter", "Light", "Beam", "Trail", "Highlight",
-        "CharacterAppearance", "Humanoid", "Animator" },
+        "CharacterAppearance", "Humanoid", "Animator"
+    },
     SERVICE_PROPS = {
-        Lighting = { "Ambient", "OutdoorAmbient", "Brightness", "ClockTime", "TimeOfDay", "FogStart", "FogEnd",
-            "FogColor", "GlobalShadows", "ExposureCompensation" },
+        Lighting = {
+            "Ambient", "OutdoorAmbient", "Brightness", "ClockTime", "TimeOfDay", "FogStart", "FogEnd",
+            "FogColor", "GlobalShadows", "ExposureCompensation"
+        },
         SoundService = { "AmbientReverb", "DistanceFactor", "DopplerScale", "RolloffScale" },
         Workspace = { "Gravity", "FallenPartsDestroyHeight", "StreamingEnabled", "StreamingMinRadius" },
         Players = { "RespawnTime", "CharacterAutoLoads" },
-        StarterPlayer = { "CharacterWalkSpeed", "CharacterJumpPower", "CharacterJumpHeight",
-            "CharacterUseJumpPower", "CameraMode", "CameraMaxZoomDistance" },
+        StarterPlayer = {
+            "CharacterWalkSpeed", "CharacterJumpPower", "CharacterJumpHeight",
+            "CharacterUseJumpPower", "CameraMode", "CameraMaxZoomDistance"
+        },
     },
     CLASS_PROPS = {
         Team = { "TeamColor", "AutoAssignable" },
@@ -401,15 +460,21 @@ local XD = {
         SunRaysEffect = { "Enabled", "Intensity", "Spread" },
         DepthOfFieldEffect = { "Enabled", "FarIntensity", "FocusDistance", "InFocusRadius" },
     },
-    ATTR_ROOTS = { "Workspace", "ReplicatedStorage", "ReplicatedFirst", "StarterGui", "StarterPlayer",
-        "StarterPack", "Lighting", "Teams", "SoundService" },
-    PROMPT_PROPS = { "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance",
-        "RequiresLineOfSight", "Enabled", "KeyboardKeyCode" },
-    FUNC_LIST = { "writefile", "readfile", "isfile", "isfolder", "makefolder", "listfiles", "decompile",
-        "getscripts", "getloadedmodules", "getnilinstances", "getconnections", "getgc", "hookmetamethod",
-        "getnamecallmethod", "checkcaller", "newcclosure", "iscclosure", "getrawmetatable", "setclipboard",
-        "gethui", "saveinstance", "request", "firesignal", "fireproximityprompt", "fireclickdetector",
-        "firetouchinterest" },
+    ATTR_ROOTS = {
+        "Workspace", "ReplicatedStorage", "ReplicatedFirst", "StarterGui", "StarterPlayer",
+        "StarterPack", "Lighting", "Teams", "SoundService"
+    },
+    PROMPT_PROPS = {
+        "ActionText", "ObjectText", "HoldDuration", "MaxActivationDistance",
+        "RequiresLineOfSight", "Enabled", "KeyboardKeyCode"
+    },
+    FUNC_LIST = {
+        "writefile", "readfile", "isfile", "isfolder", "makefolder", "listfiles", "decompile",
+        "getscriptbytecode", "getscripts", "getloadedmodules", "getnilinstances", "getconnections",
+        "getgc", "hookmetamethod", "getnamecallmethod", "checkcaller", "newcclosure", "iscclosure",
+        "getrawmetatable", "setclipboard", "gethui", "saveinstance", "request", "firesignal",
+        "fireproximityprompt", "fireclickdetector", "firetouchinterest"
+    },
 }
 
 XD.RL = genv.__DumperRL
@@ -422,13 +487,14 @@ Config.Extras.RemoteLog = (XD.RL.on == true)
 
 XD.IN = genv.__DumperIN
 if not XD.IN then
-    XD.IN = { on = false, list = {}, seen = {}, per = {}, max = 500, perMax = 12, conns = {},
-        listened = setmetatable({}, { __mode = "k" }) }
+    XD.IN = {
+        on = false, list = {}, seen = {}, per = {}, max = 500, perMax = 12, conns = {},
+        listened = setmetatable({}, { __mode = "k" })
+    }
     genv.__DumperIN = XD.IN
 end
 Config.Extras.IncomingLog = (XD.IN.on == true)
 
--- ----- แปลงค่าเป็นข้อความ -----
 function XD.quote(s)
     if #s > XD.LIM.str then
         s = string.gsub(string.sub(s, 1, XD.LIM.str), "[\192-\255][\128-\191]*$", "") .. "..."
@@ -442,10 +508,15 @@ function XD.ser(v, level, seen, compact)
     if t == "string" then return XD.quote(v) end
     if t == "number" or t == "boolean" or t == "nil" or t == "EnumItem" then return tostring(v) end
     if t == "function" then return "<function>" end
+    if t == "Vector3" then return string.format("Vector3.new(%.3g, %.3g, %.3g)", v.X, v.Y, v.Z) end
+    if t == "Vector2" then return string.format("Vector2.new(%.3g, %.3g)", v.X, v.Y) end
+    if t == "Color3" then
+        return string.format("Color3.fromRGB(%d, %d, %d)",
+            math.floor(v.R * 255 + 0.5), math.floor(v.G * 255 + 0.5), math.floor(v.B * 255 + 0.5))
+    end
     if t == "Instance" then
         local ok, p = pcall(function()
-            if v == game or v:IsDescendantOf(game) then return formatLuaPath(v) end
-            return string.format("<%s %s>", v.ClassName, v.Name)
+            return formatLuaPath(v)
         end)
         return ok and p or "<Instance>"
     end
@@ -465,8 +536,11 @@ function XD.ser(v, level, seen, compact)
         local s = XD.ser(val, level + 1, seen, compact)
         if not isArr then
             local key
-            if type(k) == "string" and string.match(k, "^[%a_][%w_]*$") then key = k
-            else key = "[" .. XD.ser(k, level + 1, seen, compact) .. "]" end
+            if type(k) == "string" and string.match(k, "^[%a_][%w_]*$") then
+                key = k
+            else
+                key = "[" .. XD.ser(k, level + 1, seen, compact) .. "]"
+            end
             s = key .. " = " .. s
         end
         parts[#parts + 1] = s
@@ -553,7 +627,6 @@ function XD.hasFunc(name)
     return ok and type(v) == "function"
 end
 
--- ชื่อโฟลเดอร์/ไฟล์ปลอดภัย (ตัด emoji และอักขระต้องห้าม)
 function XD.mapName(raw)
     local s = tostring(raw or "")
     s = string.gsub(s, "[\128-\255]", "")
@@ -646,8 +719,11 @@ function XD.gui(root, emit, depth, live)
             XD.uiCount += 1
             if XD.uiCount % 300 == 0 then task.wait() end
             local info = {}
-            if ch:IsA("GuiObject") then info[#info + 1] = "Visible=" .. tostring(ch.Visible)
-            elseif ch:IsA("LayerCollector") then info[#info + 1] = "Enabled=" .. tostring(ch.Enabled) end
+            if ch:IsA("GuiObject") then
+                info[#info + 1] = "Visible=" .. tostring(ch.Visible)
+            elseif ch:IsA("LayerCollector") then
+                info[#info + 1] = "Enabled=" .. tostring(ch.Enabled)
+            end
             if ch:IsA("TextLabel") or ch:IsA("TextButton") or ch:IsA("TextBox") then
                 info[#info + 1] = "Text=" .. XD.quote(ch.Text)
             elseif ch:IsA("ImageLabel") or ch:IsA("ImageButton") then
@@ -784,7 +860,7 @@ function XD.poll()
     task.spawn(function()
         while (XD.RL.on or XD.IN.on) and ScreenGui.Parent do
             if not XD.busy and os.clock() > XD.hold then
-                StatusLabel.Text = string.format("Logger ON: out %d | in %d", #XD.RL.list, #XD.IN.list)
+                StatusLabel.Text = string.format("Log: out %d | in %d", #XD.RL.list, #XD.IN.list)
             end
             task.wait(1)
         end
@@ -849,16 +925,20 @@ function XD.inConnect(remote)
     if ok and conn then IN.conns[#IN.conns + 1] = conn end
 end
 
+local IN_SERVICES = { "ReplicatedStorage", "ReplicatedFirst", "Workspace", "Players", "StarterGui" }
+
 function XD.inScan()
     local IN = XD.IN
-    for _, rn in ipairs({ "ReplicatedStorage", "ReplicatedFirst", "Workspace" }) do
+    for _, rn in ipairs(IN_SERVICES) do
         local okR, root = pcall(game.GetService, game, rn)
         if okR and root then
             local okD, list = pcall(root.GetDescendants, root)
             if okD and type(list) == "table" then
                 for i, inst in ipairs(list) do
                     if not IN.on then return end
-                    if inst.ClassName == "RemoteEvent" then XD.inConnect(inst) end
+                    if inst.ClassName == "RemoteEvent" and not isCoreDescendant(inst) then
+                        XD.inConnect(inst)
+                    end
                     if i % 2000 == 0 then task.wait() end
                 end
             end
@@ -878,11 +958,15 @@ function XD.inStart()
     local IN = XD.IN
     XD.inStop()
     IN.on = true
-    local okS, rs = pcall(game.GetService, game, "ReplicatedStorage")
-    if okS and rs then
-        IN.conns[#IN.conns + 1] = rs.DescendantAdded:Connect(function(inst)
-            if IN.on and inst.ClassName == "RemoteEvent" then XD.inConnect(inst) end
-        end)
+    for _, rn in ipairs(IN_SERVICES) do
+        local okS, svc = pcall(game.GetService, game, rn)
+        if okS and svc then
+            IN.conns[#IN.conns + 1] = svc.DescendantAdded:Connect(function(inst)
+                if IN.on and inst.ClassName == "RemoteEvent" and not isCoreDescendant(inst) then
+                    XD.inConnect(inst)
+                end
+            end)
+        end
     end
     task.spawn(XD.inScan)
 end
@@ -1010,8 +1094,10 @@ function XD.player(emit)
     if char then
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
-            emit("Humanoid  " .. XD.props(hum, { "Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight",
-                "UseJumpPower", "HipHeight", "RigType" }))
+            emit("Humanoid  " .. XD.props(hum, {
+                "Health", "MaxHealth", "WalkSpeed", "JumpPower", "JumpHeight",
+                "UseJumpPower", "HipHeight", "RigType"
+            }))
             local ha = XD.attrText(hum)
             if ha then emit("Humanoid  " .. ha) end
         end
@@ -1025,7 +1111,7 @@ function XD.player(emit)
     end
 end
 
--- ----- [5h] [5i] [5j] Workspace scan รอบเดียว -----
+-- ----- [5h] [5i] [5j] Workspace scan -----
 function XD.world(emit)
     local E = Config.Extras
     if not Config.Services.Workspace then
@@ -1066,8 +1152,10 @@ function XD.world(emit)
                 if g then
                     g.count += 1
                 elseif #mobOrder < L.mobs then
-                    mobs[mdl.Name] = { count = 1, ex = formatLuaPath(mdl), pos = XD.posOf(inst),
-                        stats = XD.props(inst, { "Health", "MaxHealth", "WalkSpeed" }) }
+                    mobs[mdl.Name] = {
+                        count = 1, ex = formatLuaPath(mdl), pos = XD.posOf(inst),
+                        stats = XD.props(inst, { "Health", "MaxHealth", "WalkSpeed" })
+                    }
                     mobOrder[#mobOrder + 1] = mdl.Name
                 else more.mobs += 1 end
             end
@@ -1084,7 +1172,7 @@ function XD.world(emit)
             since += 1
             if since >= 1500 then
                 since = 0
-                StatusLabel.Text = string.format("Workspace scan: %d", total)
+                StatusLabel.Text = string.format("Workspace: %d", total)
                 task.wait()
             end
         end
@@ -1145,7 +1233,7 @@ function XD.world(emit)
     end
 end
 
--- ----- [5k] Loaded modules นอก ReplicatedStorage -----
+-- ----- [5k] Loaded modules outside ReplicatedStorage -----
 function XD.loaded(emit)
     XD.head(emit, "[5k] LOADED MODULES OUTSIDE REPLICATEDSTORAGE (return values)")
     if typeof(getloadedmodules) ~= "function" then
@@ -1154,16 +1242,13 @@ function XD.loaded(emit)
     end
     local okM, mods = pcall(getloadedmodules)
     if not okM or type(mods) ~= "table" then emit("(getloadedmodules failed)") return end
-    local CP
-    pcall(function() CP = game:GetService("CorePackages") end)
     local rs = game:GetService("ReplicatedStorage")
     local shown, skipped = 0, 0
     for i, m in ipairs(mods) do
         if i % 100 == 0 then task.wait() end
         local keep = false
         if typeof(m) == "Instance" and m.ClassName == "ModuleScript" and m.Parent ~= nil then
-            keep = not m:IsDescendantOf(CoreGui)
-                and not (CP and m:IsDescendantOf(CP))
+            keep = not isCoreDescendant(m)
                 and not (Config.Extras.RSValues and m:IsDescendantOf(rs))
                 and not (Config.Advanced.SkipDefaultScripts and shouldIgnore(m))
         end
@@ -1180,7 +1265,7 @@ function XD.loaded(emit)
     emit(string.format("(%d modules shown, %d skipped)", math.min(shown, XD.MOD_CAP), skipped))
 end
 
--- ----- สคริปต์ที่มีเฉพาะตอนเล่น: เช็กว่ามีต้นฉบับใน Starter* แล้วหรือไม่ -----
+-- ----- Static copy check -----
 function XD.isStaticCopy(inst, liveRoot, staticRoot)
     if not staticRoot then return false end
     local names, cur = {}, inst
@@ -1197,7 +1282,7 @@ function XD.isStaticCopy(inst, liveRoot, staticRoot)
     return node.ClassName == inst.ClassName
 end
 
--- ----- ตัวแบ่งไฟล์ (1-10 ไฟล์) -----
+-- ----- File splitter (1-10 files) -----
 function XD.safeAt(L, i)
     local a = L[i]
     if type(a) ~= "string" then return false end
@@ -1228,7 +1313,6 @@ function XD.splitPlan(L, parts)
     return ranges
 end
 
--- คืนค่า: สำเร็จไหม, รายชื่อไฟล์, ใช้ที่เก็บสำรอง (flat) ไหม
 function XD.writeSplit(L, base, ext, parts)
     parts = math.clamp(math.floor(tonumber(parts) or 1), 1, 10)
     local ranges = XD.splitPlan(L, parts)
@@ -1272,7 +1356,7 @@ function XD.writeSplit(L, base, ext, parts)
 end
 
 -- ==========================================
--- 5. รายการตัวเลือก
+-- 5. Controls
 -- ==========================================
 header("SCRIPTS")
 toggle("LocalScript", Config.Scripts, "LocalScript")
@@ -1285,8 +1369,10 @@ toggle("RemoteFunction", Config.Remotes, "RemoteFunction")
 toggle("Bindables", Config.Remotes, "Bindables")
 
 header("SERVICES")
-for _, s in ipairs({ "ReplicatedStorage", "Workspace", "StarterPlayer", "StarterGui", "StarterPack",
-    "ReplicatedFirst", "Lighting" }) do
+for _, s in ipairs({
+    "ReplicatedStorage", "Workspace", "StarterPlayer", "StarterGui", "StarterPack",
+    "ReplicatedFirst", "Lighting"
+}) do
     toggle(s, Config.Services, s)
 end
 
@@ -1309,6 +1395,7 @@ cycle("Output Format", Config.Advanced.OutputFormat, function()
 end)
 cycle("Split files (1 = single)", Config.Advanced.SplitParts, function()
     Config.Advanced.SplitParts = (Config.Advanced.SplitParts % 10) + 1
+    ModeBadge.Text = Config.Advanced.SplitParts == 1 and "Single-File" or ("Split x" .. Config.Advanced.SplitParts)
     return Config.Advanced.SplitParts
 end)
 toggle("Decompile Timeout", Config.Advanced, "DecompileTimeout")
@@ -1339,6 +1426,7 @@ toggle("[5i] Interactables", Config.Extras, "Interactables")
 toggle("[5j] NPC / Mob census", Config.Extras, "NPCCensus")
 toggle("[5k] Loaded modules", Config.Extras, "LoadedModules")
 toggle("Live scripts (PlayerGui...)", Config.Extras, "LiveScripts")
+toggle("Nil instances (hidden)", Config.Extras, "NilInstances")
 
 header("REMOTE LOGGERS (turn ON before playing)")
 toggle("[5d] Outgoing (Client->Server)", Config.Extras, "RemoteLog", function(v) return XD.setLogger(v) end)
@@ -1352,31 +1440,43 @@ end)
 if XD.RL.on or XD.IN.on then XD.poll() end
 
 -- ==========================================
--- 6. Overlay ผลลัพธ์
+-- 6. Result Overlay
 -- ==========================================
-local Overlay = mk("Frame", { Size = UDim2.new(1, 0, 1, -24), Position = UDim2.new(0, 0, 0, 24),
-    BackgroundColor3 = IG.WindowBg, BorderSizePixel = 0, Visible = false, ZIndex = 10 }, MainFrame)
-local OHead = mk("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = IG.MenuBar,
-    BorderSizePixel = 0, ZIndex = 11 }, Overlay)
-local OTitle = label(OHead, "DUMP SUMMARY", UDim2.new(1, -130, 1, 0), UDim2.new(0, 8, 0, 0))
+local Overlay = mk("Frame", {
+    Size = UDim2.new(1, 0, 1, -20), Position = UDim2.new(0, 0, 0, 20),
+    BackgroundColor3 = IG.WindowBg, BorderSizePixel = 0, Visible = false, ZIndex = 10
+}, MainFrame)
+local OHead = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = IG.MenuBar,
+    BorderSizePixel = 0, ZIndex = 11
+}, Overlay)
+local OTitle = label(OHead, "DUMP SUMMARY", UDim2.new(1, -108, 1, 0), UDim2.new(0, 6, 0, 0), IG.Text, nil, 10)
 OTitle.ZIndex = 11
-local CopyBtn = mk("TextButton", { Size = UDim2.fromOffset(56, 20), Position = UDim2.new(1, -122, 0.5, -10),
+local CopyBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(46, 17), Position = UDim2.new(1, -98, 0.5, -8),
     BackgroundColor3 = IG.Button, BorderSizePixel = 0, AutoButtonColor = false, Text = "Copy",
-    TextColor3 = IG.Text, Font = IG.Font, TextSize = 11, ZIndex = 11 }, OHead)
+    TextColor3 = IG.Text, Font = IG.Font, TextSize = 10, ZIndex = 11
+}, OHead)
 stroke(CopyBtn)
-local BackBtn = mk("TextButton", { Size = UDim2.fromOffset(56, 20), Position = UDim2.new(1, -62, 0.5, -10),
+local BackBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(46, 17), Position = UDim2.new(1, -48, 0.5, -8),
     BackgroundColor3 = IG.Button, BorderSizePixel = 0, AutoButtonColor = false, Text = "Back",
-    TextColor3 = IG.Text, Font = IG.Font, TextSize = 11, ZIndex = 11 }, OHead)
+    TextColor3 = IG.Text, Font = IG.Font, TextSize = 10, ZIndex = 11
+}, OHead)
 stroke(BackBtn)
-local OScroll = mk("ScrollingFrame", { Size = UDim2.new(1, -12, 1, -34), Position = UDim2.new(0, 6, 0, 30),
-    BackgroundColor3 = IG.ChildBg, BorderSizePixel = 0, ScrollBarThickness = 5, CanvasSize = UDim2.new(),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 11 }, Overlay)
+local OScroll = mk("ScrollingFrame", {
+    Size = UDim2.new(1, -8, 1, -26), Position = UDim2.new(0, 4, 0, 24),
+    BackgroundColor3 = IG.ChildBg, BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 11
+}, Overlay)
 stroke(OScroll)
-local OBox = mk("TextBox", { Size = UDim2.new(1, -10, 0, 0), Position = UDim2.new(0, 5, 0, 4),
+local OBox = mk("TextBox", {
+    Size = UDim2.new(1, -8, 0, 0), Position = UDim2.new(0, 4, 0, 3),
     AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, TextEditable = false,
     ClearTextOnFocus = false, MultiLine = true, TextWrapped = true, Text = "", TextColor3 = IG.Text,
-    Font = Enum.Font.Code, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
-    TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 11 }, OScroll)
+    Font = Enum.Font.Code, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 11
+}, OScroll)
 BackBtn.Activated:Connect(function() Overlay.Visible = false end)
 CopyBtn.Activated:Connect(function()
     if copyToClipboard(OBox.Text) then
@@ -1386,40 +1486,85 @@ CopyBtn.Activated:Connect(function()
 end)
 
 -- ==========================================
--- 7. ระบบ Dump
+-- 7. Dump Engine
 -- ==========================================
 local function isObfuscated(src)
     if not src or #src == 0 then return false end
-    if string.find(src, "IronBrew") or string.find(src, "MoonSec") or string.find(src, "Luraph") then return true end
-    local _, n = string.gsub(src, "\\%d%d%d", "")
-    return n > 40
+    if string.find(src, "IronBrew", 1, true)
+        or string.find(src, "MoonSec", 1, true)
+        or string.find(src, "Luraph", 1, true)
+        or string.find(src, "PSU", 1, true)
+        or string.find(src, "AztupBrew", 1, true) then
+        return true
+    end
+    if #src > 12000 and not string.find(src, "\n", 1, true) then
+        return true
+    end
+    local _, hexEsc = string.gsub(src, "\\x%x%x", "")
+    if hexEsc > 60 then return true end
+    local _, vmLoop = string.gsub(src, "while%s+true%s+do", "")
+    local _, envCalls = string.gsub(src, "getfenv%s*%(", "")
+    return vmLoop >= 2 and envCalls >= 2
 end
 
 local function extractRequires(src)
-    local deps = {}
-    for m in string.gmatch(src or "", "require%s*%(([^%)]+)%)") do deps[#deps + 1] = m end
+    local deps, seenReq = {}, {}
+    for m in string.gmatch(src or "", "require%s*(%b())") do
+        local inner = string.sub(m, 2, -2)
+        inner = string.match(inner, "^%s*(.-)%s*$") or inner
+        if inner ~= "" and not seenReq[inner] then
+            seenReq[inner] = true
+            deps[#deps + 1] = inner
+        end
+    end
     return deps
 end
+
+local decompileBusy = false
 
 local function getScriptContent(inst, timeoutSec)
     local ok, src = pcall(function() return inst.Source end)
     if ok and typeof(src) == "string" and #src > 0 then return src end
+
+    if hasBytecode then
+        local okB, bc = pcall(getscriptbytecode, inst)
+        if okB and (bc == nil or bc == "") then
+            return "-- [Empty bytecode (server-only or stripped): " .. formatLuaPath(inst) .. "]"
+        end
+    end
+
     if hasDecompile then
+        if decompileBusy then
+            local waitBusy = 0
+            while decompileBusy and waitBusy < 3 do
+                waitBusy += task.wait(0.05)
+            end
+            if decompileBusy then
+                return "-- [Decompiler busy from previous timeout, skipped: " .. formatLuaPath(inst) .. "]"
+            end
+        end
+
+        decompileBusy = true
         local result, finished = nil, false
         task.spawn(function()
             local okD, dec = pcall(decompile, inst)
             if okD and typeof(dec) == "string" and #dec > 0 then result = dec end
             finished = true
+            decompileBusy = false
         end)
         local waited = 0
         local maxWait = Config.Advanced.DecompileTimeout and timeoutSec or 8
-        while not finished and waited < maxWait do waited += task.wait(0.05) end
+        while not finished and waited < maxWait do
+            waited += task.wait(0.05)
+        end
         if result then return result end
+        if not finished then
+            return "-- [Decompile timed out after " .. tostring(maxWait) .. "s: " .. formatLuaPath(inst) .. "]"
+        end
     end
     return "-- [Source unavailable or empty: " .. formatLuaPath(inst) .. "]"
 end
 
--- ห่อซอร์สเป็นคอมเมนต์ยาว (หาระดับ = ที่ไม่ชนกับเนื้อหา)
 local function wrapComment(src)
     local lvl = 0
     while string.find(src, "]" .. string.rep("=", lvl) .. "]", 1, true) do lvl += 1 end
@@ -1433,7 +1578,7 @@ local function runDump()
     local base = XD.mapName(PlaceNameText)
     local scripts, remotes, tree, seen, count = {}, {}, {}, {}, 0
 
-    local function consider(inst, live, container, staticRoot)
+    local function consider(inst, tag, container, staticRoot)
         if seen[inst] then return end
         seen[inst] = true
         count += 1
@@ -1441,28 +1586,31 @@ local function runDump()
             StatusLabel.Text = string.format("Scanning (%d)...", count)
             task.wait()
         end
+        if isCoreDescendant(inst) then return end
         if Config.Advanced.SkipDefaultScripts and shouldIgnore(inst) then return end
 
-        if not live then
+        if tag ~= "LIVE" then
             local isRemote = (inst:IsA("RemoteEvent") and Config.Remotes.RemoteEvent)
                 or (inst:IsA("RemoteFunction") and Config.Remotes.RemoteFunction)
                 or ((inst:IsA("BindableEvent") or inst:IsA("BindableFunction")) and Config.Remotes.Bindables)
             if isRemote then
                 local lp = formatLuaPath(inst)
-                remotes[#remotes + 1] = { Name = inst.Name, ClassName = inst.ClassName, LuaPath = lp }
-                tree[#tree + 1] = "  |- [REMOTE] " .. inst.ClassName .. " : " .. lp
+                remotes[#remotes + 1] = { Name = inst.Name, ClassName = inst.ClassName, LuaPath = lp, Tag = tag }
+                tree[#tree + 1] = "  |- [REMOTE] " .. inst.ClassName .. " : " .. lp .. (tag == "NIL" and " [NIL]" or "")
             end
         end
 
         local target = false
-        if inst:IsA("LocalScript") then target = Config.Scripts.LocalScript
-        elseif inst:IsA("ModuleScript") then target = Config.Scripts.ModuleScript
+        if inst:IsA("LocalScript") then
+            target = Config.Scripts.LocalScript
+        elseif inst:IsA("ModuleScript") then
+            target = Config.Scripts.ModuleScript
         elseif inst:IsA("Script") and Config.Scripts.ClientRunScript then
             local ok, rc = pcall(function() return inst.RunContext end)
             target = ok and rc == Enum.RunContext.Client
         end
         if not target then return end
-        if live and XD.isStaticCopy(inst, container, staticRoot) then return end
+        if tag == "LIVE" and XD.isStaticCopy(inst, container, staticRoot) then return end
 
         local disabled = false
         pcall(function() disabled = inst.Disabled end)
@@ -1477,27 +1625,32 @@ local function runDump()
             prop = string.format(" [Class=%s, Disabled=%s]", inst.ClassName, tostring(disabled))
         end
         local lp = formatLuaPath(inst)
-        scripts[#scripts + 1] = { Name = inst.Name, LuaPath = lp, ClassName = inst.ClassName, Size = #src,
-            Obf = obf, Prop = prop, Deps = extractRequires(src), Source = src, Live = live }
-        tree[#tree + 1] = "  |- [SCRIPT] " .. inst.ClassName .. " : " .. lp .. (live and " [LIVE]" or "") .. (obf and " [OBF]" or "")
+        scripts[#scripts + 1] = {
+            Name = inst.Name, LuaPath = lp, ClassName = inst.ClassName, Size = #src,
+            Obf = obf, Prop = prop, Deps = extractRequires(src), Source = src, Tag = tag
+        }
+        local tagBadge = tag and (" [" .. tag .. "]") or ""
+        tree[#tree + 1] = "  |- [SCRIPT] " .. inst.ClassName .. " : " .. lp .. tagBadge .. (obf and " [OBF]" or "")
     end
 
-    local function scan(container, live, staticRoot)
+    local function scan(container, tag, staticRoot)
         local ok, list = pcall(container.GetDescendants, container)
         if not ok then return end
         tree[#tree + 1] = "[" .. formatLuaPath(container) .. "]"
         for _, inst in ipairs(list) do
-            if not (live and inst:IsDescendantOf(ScreenGui)) then
-                consider(inst, live, container, staticRoot)
+            if not (tag == "LIVE" and inst:IsDescendantOf(ScreenGui)) then
+                consider(inst, tag, container, staticRoot)
             end
         end
     end
 
-    for _, sn in ipairs({ "ReplicatedStorage", "Workspace", "StarterPlayer", "StarterPack", "StarterGui",
-        "ReplicatedFirst", "Lighting" }) do
+    for _, sn in ipairs({
+        "ReplicatedStorage", "Workspace", "StarterPlayer", "StarterPack", "StarterGui",
+        "ReplicatedFirst", "Lighting"
+    }) do
         if Config.Services[sn] then
             local ok, srv = pcall(game.GetService, game, sn)
-            if ok and srv then scan(srv, false, nil) end
+            if ok and srv then scan(srv, nil, nil) end
         end
     end
 
@@ -1509,11 +1662,32 @@ local function runDump()
             { LP:FindFirstChildOfClass("Backpack"), game:GetService("StarterPack") },
         }
         for _, pair in ipairs(lives) do
-            if pair[1] then scan(pair[1], true, pair[2]) end
+            if pair[1] then scan(pair[1], "LIVE", pair[2]) end
         end
     end
 
-    -- ----- ประกอบไฟล์ -----
+    if E.NilInstances and hasNilInstances then
+        local okN, nils = pcall(getnilinstances)
+        if okN and type(nils) == "table" then
+            tree[#tree + 1] = "[NIL INSTANCES]"
+            local nilSeen = 0
+            for _, inst in ipairs(nils) do
+                if typeof(inst) == "Instance" and inst.Parent == nil and not isCoreDescendant(inst) then
+                    nilSeen += 1
+                    if nilSeen > XD.NIL_CAP then break end
+                    consider(inst, "NIL", nil, nil)
+                    local okD, desc = pcall(inst.GetDescendants, inst)
+                    if okD and type(desc) == "table" then
+                        for _, ch in ipairs(desc) do
+                            consider(ch, "NIL", nil, nil)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- ----- Assemble Output -----
     local L = {}
     local function add(s) L[#L + 1] = s end
     local function emit(str)
@@ -1530,7 +1704,7 @@ local function runDump()
 
     local timeIdx
     add("--[[")
-    add("    SINGLE-FILE GAME DUMP (DUMPER v2.6.0)")
+    add("    SINGLE-FILE GAME DUMP (DUMPER v2.7.0)")
     if Config.Reports.GameInfo then
         add("    Place Name    : " .. XD.oneLine(PlaceNameText, 120))
         add("    Place ID      : " .. tostring(game.PlaceId))
@@ -1546,17 +1720,22 @@ local function runDump()
     addHead("[1] REMOTES DUMP (" .. #remotes .. " FOUND)")
     if #remotes == 0 then add("-- No remotes found in selected services.") end
     for i, rm in ipairs(remotes) do
-        add(string.format("-- [%03d] [%s] %s", i, rm.ClassName, rm.LuaPath))
-        if rm.ClassName == "RemoteEvent" then add("--   Usage: " .. rm.LuaPath .. ":FireServer(...)")
-        elseif rm.ClassName == "RemoteFunction" then add("--   Usage: " .. rm.LuaPath .. ":InvokeServer(...)") end
+        local tb = rm.Tag and (" [" .. rm.Tag .. "]") or ""
+        add(string.format("-- [%03d] [%s] %s%s", i, rm.ClassName, rm.LuaPath, tb))
+        if rm.ClassName == "RemoteEvent" then
+            add("--   Usage: " .. rm.LuaPath .. ":FireServer(...)")
+        elseif rm.ClassName == "RemoteFunction" then
+            add("--   Usage: " .. rm.LuaPath .. ":InvokeServer(...)")
+        end
     end
     add("")
 
     if Config.Reports.ScriptIndex then
         addHead("[2] SCRIPT INDEX (" .. #scripts .. " FOUND)")
         for i, sc in ipairs(scripts) do
+            local tb = sc.Tag and (" [" .. sc.Tag .. "]") or ""
             add(string.format("-- [%03d] [%s] %s (%d bytes)%s%s%s", i, sc.ClassName, sc.LuaPath, sc.Size, sc.Prop,
-                sc.Live and " [LIVE]" or "", sc.Obf and " [OBFUSCATED]" or ""))
+                tb, sc.Obf and " [OBFUSCATED]" or ""))
         end
         add("")
     end
@@ -1600,10 +1779,11 @@ local function runDump()
     add("")
     local dash = "-- " .. string.rep("-", 60)
     for i, sc in ipairs(scripts) do
+        local tb = sc.Tag and (" | [" .. sc.Tag .. "]") or ""
         add(dash)
         add(string.format("-- SCRIPT [%03d]: %s", i, XD.oneLine(sc.Name, 80)))
         add(string.format("-- CLASS : %s | SIZE: %d bytes%s%s", sc.ClassName, sc.Size,
-            sc.Live and " | [LIVE]" or "", sc.Obf and " | [OBFUSCATED]" or ""))
+            tb, sc.Obf and " | [OBFUSCATED]" or ""))
         add("-- PATH  : " .. sc.LuaPath)
         add(dash)
         add(wrapComment(sc.Source))
@@ -1617,8 +1797,11 @@ local function runDump()
     local ok, files, flat = XD.writeSplit(L, base, Config.Advanced.OutputFormat, Config.Advanced.SplitParts)
 
     if Config.Advanced.AutoCopySummary then
-        if #files <= 1 then copyToClipboard(table.concat(L, "\n"))
-        else copyToClipboard(table.concat(files, "\n")) end
+        if #files <= 1 then
+            copyToClipboard(table.concat(L, "\n"))
+        else
+            copyToClipboard(table.concat(files, "\n"))
+        end
     end
 
     local S = {
@@ -1644,7 +1827,11 @@ local function runDump()
         end
         if #remotes > 20 then S[#S + 1] = string.format("... and %d more in the file", #remotes - 20) end
     end
-    OBox.Text = table.concat(S, "\n")
+    local summaryText = table.concat(S, "\n")
+    if #summaryText > 14000 then
+        summaryText = string.sub(summaryText, 1, 14000) .. "\n... (truncated for UI display)"
+    end
+    OBox.Text = summaryText
     Overlay.Visible = true
     StatusLabel.Text = "Saved " .. #files .. " file(s)"
 
@@ -1665,7 +1852,7 @@ StartBtn.Activated:Connect(function()
         local ok, err = xpcall(runDump, debug.traceback)
         if not ok then
             warn("[DUMPER] " .. tostring(err))
-            OBox.Text = "DUMP FAILED:\n" .. tostring(err)
+            OBox.Text = "DUMP FAILED:\n" .. string.sub(tostring(err), 1, 12000)
             Overlay.Visible = true
             StatusLabel.Text = "Dump failed (see error)"
         end
@@ -1677,8 +1864,7 @@ StartBtn.Activated:Connect(function()
     end)
 end)
 
-StatusLabel.Text = "Ready (Single .lua)"
-print("[DUMPER] v2.6.0 loaded - press the [+] ImGui Dumper button")
+StatusLabel.Text = "Ready"
 
 end, function(e) return debug.traceback(tostring(e), 2) end)
 
